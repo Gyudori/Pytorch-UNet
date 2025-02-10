@@ -4,8 +4,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF
+from torchvision.utils import save_image
 from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split
@@ -16,11 +15,11 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+from utils.utils import get_prediction_debug_image
 
 dir_img = Path("./data_floorplan/imgs/")
 dir_mask = Path("./data_floorplan/masks/")
 dir_checkpoint = Path("./checkpoints/")
-
 
 def train_model(
         model,
@@ -73,6 +72,9 @@ def train_model(
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     global_step = 0
+    
+    validation_output_dir = Path(writer.log_dir) / 'validation'
+    validation_output_dir.mkdir(parents=True, exist_ok=True)
 
     # 5. Begin training
     for epoch in range(1, epochs + 1):
@@ -120,13 +122,26 @@ def train_model(
                 division_step = (n_train // (5 * batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
-                        val_score = evaluate(model, val_loader, device, amp)
+                        # val_score = evaluate(model, val_loader, device, amp)
+                        val_score = 0
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
-                            pass                    
-                        except:
+                            image = images[0].cpu()
+                            true_mask = true_masks[0].float().cpu().unsqueeze(0)
+                            pred_mask = prediction.argmax(dim=1)[0].float().cpu().unsqueeze(0)
+                            
+                            combined = get_prediction_debug_image(image, prediction, pred_mask, true_mask)
+                            
+                            save_image(combined, validation_output_dir / f"combined_{global_step}.png") 
+                                                                                    
+                            writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
+                            writer.add_scalar('validation/Dice', val_score, global_step)
+                            
+               
+                        except Exception as e:
+                            print(e)
                             pass
 
         if save_checkpoint:
