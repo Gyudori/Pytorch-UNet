@@ -1,8 +1,6 @@
 import argparse
 import logging
 import os
-import random
-import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +9,7 @@ import torchvision.transforms.functional as TF
 from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from evaluate import evaluate
@@ -54,6 +53,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
+    writer = SummaryWriter(comment=f'LR_{learning_rate}_BS_{batch_size}_SCALE_{img_scale}')
     logging.info(f'''Starting training:
         Epochs:          {epochs}
         Batch size:      {batch_size}
@@ -113,7 +113,7 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()
-
+                writer.add_scalar('Loss/train', loss.item(), global_step)
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
