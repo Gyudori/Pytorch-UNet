@@ -2,15 +2,16 @@ import logging
 import numpy as np
 import torch
 from PIL import Image
-from functools import lru_cache
 from functools import partial
-from itertools import repeat
 from multiprocessing import Pool
 from os import listdir
 from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import albumentations as A
+import random
+import cv2
 
 
 def load_image(filename):
@@ -115,3 +116,77 @@ class BasicDataset(Dataset):
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1):
         super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+        
+class FloorplanDataset(BasicDataset):
+    def __init__(self, images_dir, mask_dir, scale=1, enable_augmentation=False):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+        self.rigid_transform = None
+        self.degradation_transform = None
+        
+        enable_degradation = True
+        
+        if enable_augmentation:
+            self.rigid_transform = A.Compose([
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomRotate90(p=0.5),
+                A.Transpose(p=0.5),
+                A.ToTensorV2()
+            ])
+            
+            if enable_degradation:
+                self.degradation_transform = A.Compose([
+                    A.OneOf([
+                        A.JpegCompression(
+                            quality_lower=85,
+                            quality_upper=95, 
+                            p=0.5
+                        ),
+                        A.Lambda(
+                            image=lambda x, _: self._apply_downup_scale(x),
+                            p=0.5
+                        ),
+                    ], p=0.3),
+                    A.ToTensorV2()
+                ], additional_targets={})
+        else:
+            self.rigid_transform = A.Compose([
+                A.ToTensorV2()
+            ])
+                
+        
+    def __getitem__(self, idx):
+        basic_data = super().__getitem__(idx)
+        
+        image = basic_data['image'].numpy().transpose(1, 2, 0)
+        mask = basic_data['mask'].numpy()
+        
+        if self.rigid_transform is not None:
+            transformed = self.rigid_transform(image=image, mask=mask)
+            image = transformed['image']
+            mask = transformed['mask']
+        
+        if self.degradation_transform is not None:
+            transformed = self.degradation_transform(image=image)
+            image = transformed['image']
+                
+        return {
+            'image': image,
+            'mask': mask
+        }
+
+    def _apply_downup_scale(self, image):
+        # scale ratio 생성
+        scale_ratio = random.uniform(0.4, 0.8)
+        # interpolation 방식 선택
+        down_interpolation = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
+        up_interpolation = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
+        
+        h, w = image.shape[:2]
+        # downscale
+        h_down, w_down = int(h * scale_ratio), int(w * scale_ratio)
+        img_down = cv2.resize(image, (w_down, h_down), interpolation=down_interpolation)
+        # 원본 크기로 upscale
+        img_up = cv2.resize(img_down, (w, h), interpolation=up_interpolation)
+        
+        return img_up
