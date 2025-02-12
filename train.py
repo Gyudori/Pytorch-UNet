@@ -13,13 +13,12 @@ from tqdm import tqdm
 
 from evaluate import evaluate
 from unet import UNet
-from utils.data_loading import BasicDataset, CarvanaDataset
+from utils.data_loading import BasicDataset, FloorplanDataset
 from utils.dice_score import dice_loss
 from utils.utils import get_prediction_debug_image
 
 dir_img = Path("./data_floorplan/imgs/")
 dir_mask = Path("./data_floorplan/masks/")
-dir_checkpoint = Path("./checkpoints/")
 
 def train_model(
         model,
@@ -38,7 +37,7 @@ def train_model(
 ):
     # 1. Create dataset
     try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+        dataset = FloorplanDataset(dir_img, dir_mask, img_scale, enable_augmentation=True)
     except (AssertionError, RuntimeError, IndexError):
         dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
@@ -125,8 +124,7 @@ def train_model(
                 division_step = (n_train // (5 * batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
-                        # val_score = evaluate(model, val_loader, device, amp)
-                        val_score = 0
+                        val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
@@ -148,6 +146,7 @@ def train_model(
                             pass
 
         if save_checkpoint:
+            dir_checkpoint = Path(writer.log_dir) / 'checkpoints'
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
