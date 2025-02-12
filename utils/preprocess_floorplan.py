@@ -38,7 +38,7 @@ def process_bim_drawing_file(file: Path, output_dir: Path):
 
 
 def process_floorplan_file(file: Path, output_dir: Path):
-    output_filepath = output_dir / file.name.replace("_floorplan.png", ".jpg")
+    output_filepath = output_dir / file.name.replace("_floorplan.png", ".png")
 
     if output_filepath.exists():
         print("Skip existing file", output_filepath)
@@ -47,7 +47,7 @@ def process_floorplan_file(file: Path, output_dir: Path):
     image = Image.open(file)
     rgb_image = image.convert("RGB")
 
-    rgb_image.save(output_filepath, format="JPEG", quality=95)
+    rgb_image.save(output_filepath)
 
 
 def main():
