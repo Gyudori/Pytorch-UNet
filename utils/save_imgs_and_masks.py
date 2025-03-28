@@ -17,7 +17,7 @@ def main():
     filepaths = list(inputDirpath.glob("*.png"))
     filepaths.sort()
 
-    for filepath in tqdm.tqdm(filepaths):        
+    for filepath in tqdm.tqdm(filepaths):
         filename = filepath.name
         basename = filename.split(".")[0]
 
@@ -45,10 +45,10 @@ def main():
             mask.save(masksDirpath / outputFilename)
         else:
             img = Image.open(inputFilepath)
-            
+
             # img to channel 3
             img = img.convert("RGB")
-            
+
             img.save(imgsDirpath / outputFilename)
 
 

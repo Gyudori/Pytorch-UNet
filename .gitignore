@@ -1,6 +1,7 @@
 *.pyc
-data/
-data_floorplan/
+data*
+runs/
+.vscode/
 __pycache__/
 checkpoints/
 *.pth

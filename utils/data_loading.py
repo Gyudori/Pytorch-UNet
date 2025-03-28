@@ -16,16 +16,16 @@ import cv2
 
 def load_image(filename):
     ext = splitext(filename)[1]
-    if ext == '.npy':
+    if ext == ".npy":
         return Image.fromarray(np.load(filename))
-    elif ext in ['.pt', '.pth']:
+    elif ext in [".pt", ".pth"]:
         return Image.fromarray(torch.load(filename).numpy())
     else:
         return Image.open(filename)
 
 
 def unique_mask_values(idx, mask_dir, mask_suffix):
-    mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
+    mask_file = list(mask_dir.glob(idx + mask_suffix + ".*"))[0]
     mask = np.asarray(load_image(mask_file))
     if mask.ndim == 2:
         return np.unique(mask)
@@ -33,31 +33,52 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
         mask = mask.reshape(-1, mask.shape[-1])
         return np.unique(mask, axis=0)
     else:
-        raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
+        raise ValueError(
+            f"Loaded masks should have 2 or 3 dimensions, found {mask.ndim}"
+        )
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(
+        self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ""
+    ):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
-        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        assert 0 < scale <= 1, "Scale must be between 0 and 1"
         self.scale = scale
         self.mask_suffix = mask_suffix
 
-        self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
+        self.ids = [
+            splitext(file)[0]
+            for file in listdir(images_dir)
+            if isfile(join(images_dir, file)) and not file.startswith(".")
+        ]
         if not self.ids:
-            raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
+            raise RuntimeError(
+                f"No input file found in {images_dir}, make sure you put your images there"
+            )
 
-        logging.info(f'Creating dataset with {len(self.ids)} examples')
-        logging.info('Scanning mask files to determine unique values')
+        logging.info(f"Creating dataset with {len(self.ids)} examples")
+        logging.info("Scanning mask files to determine unique values")
         with Pool() as p:
-            unique = list(tqdm(
-                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-                total=len(self.ids)
-            ))
+            unique = list(
+                tqdm(
+                    p.imap(
+                        partial(
+                            unique_mask_values,
+                            mask_dir=self.mask_dir,
+                            mask_suffix=self.mask_suffix,
+                        ),
+                        self.ids,
+                    ),
+                    total=len(self.ids),
+                )
+            )
 
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        logging.info(f'Unique mask values: {self.mask_values}')
+        self.mask_values = list(
+            sorted(np.unique(np.concatenate(unique), axis=0).tolist())
+        )
+        logging.info(f"Unique mask values: {self.mask_values}")
 
     def __len__(self):
         return len(self.ids)
@@ -66,8 +87,12 @@ class BasicDataset(Dataset):
     def preprocess(mask_values, pil_img, scale, is_mask):
         w, h = pil_img.size
         newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        assert (
+            newW > 0 and newH > 0
+        ), "Scale is too small, resized images would have no pixel"
+        pil_img = pil_img.resize(
+            (newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC
+        )
         img = np.asarray(pil_img)
 
         if is_mask:
@@ -93,100 +118,110 @@ class BasicDataset(Dataset):
 
     def __getitem__(self, idx):
         name = self.ids[idx]
-        mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
-        img_file = list(self.images_dir.glob(name + '.*'))
+        mask_file = list(self.mask_dir.glob(name + self.mask_suffix + ".*"))
+        img_file = list(self.images_dir.glob(name + ".*"))
 
-        assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
-        assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+        assert (
+            len(img_file) == 1
+        ), f"Either no image or multiple images found for the ID {name}: {img_file}"
+        assert (
+            len(mask_file) == 1
+        ), f"Either no mask or multiple masks found for the ID {name}: {mask_file}"
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
-        assert img.size == mask.size, \
-            f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+        assert (
+            img.size == mask.size
+        ), f"Image and mask {name} should be the same size, but are {img.size} and {mask.size}"
 
         img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
         mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
 
         return {
-            'image': torch.as_tensor(img.copy()).float().contiguous(),
-            'mask': torch.as_tensor(mask.copy()).long().contiguous()
+            "image": torch.as_tensor(img.copy()).float().contiguous(),
+            "mask": torch.as_tensor(mask.copy()).long().contiguous(),
         }
 
 
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
-        
+        super().__init__(images_dir, mask_dir, scale, mask_suffix="_mask")
+
+
 class FloorplanDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1, enable_augmentation=False):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+        super().__init__(images_dir, mask_dir, scale, mask_suffix="_mask")
         self.rigid_transform = None
         self.degradation_transform = None
-        
+
         enable_degradation = True
-        
+
         if enable_augmentation:
-            self.rigid_transform = A.Compose([
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.RandomRotate90(p=0.5),
-                A.Transpose(p=0.5),
-                A.ToTensorV2()
-            ])
-            
+            self.rigid_transform = A.Compose(
+                [
+                    A.HorizontalFlip(p=0.5),
+                    A.VerticalFlip(p=0.5),
+                    A.RandomRotate90(p=0.5),
+                    A.Transpose(p=0.5),
+                    A.ToTensorV2(),
+                ]
+            )
+
             if enable_degradation:
-                self.degradation_transform = A.Compose([
-                    A.OneOf([
-                        A.JpegCompression(
-                            quality_lower=85,
-                            quality_upper=95, 
-                            p=0.5
+                self.degradation_transform = A.Compose(
+                    [
+                        A.OneOf(
+                            [
+                                A.JpegCompression(
+                                    quality_lower=85, quality_upper=95, p=0.5
+                                ),
+                                A.Lambda(
+                                    image=lambda x, _: self._apply_downup_scale(x),
+                                    p=0.5,
+                                ),
+                            ],
+                            p=0.3,
                         ),
-                        A.Lambda(
-                            image=lambda x, _: self._apply_downup_scale(x),
-                            p=0.5
-                        ),
-                    ], p=0.3),
-                    A.ToTensorV2()
-                ], additional_targets={})
+                        A.ToTensorV2(),
+                    ],
+                    additional_targets={},
+                )
         else:
-            self.rigid_transform = A.Compose([
-                A.ToTensorV2()
-            ])
-                
-        
+            self.rigid_transform = A.Compose([A.ToTensorV2()])
+
     def __getitem__(self, idx):
         basic_data = super().__getitem__(idx)
-        
-        image = basic_data['image'].numpy().transpose(1, 2, 0)
-        mask = basic_data['mask'].numpy()
-        
+
+        image = basic_data["image"].numpy().transpose(1, 2, 0)
+        mask = basic_data["mask"].numpy()
+
         if self.rigid_transform is not None:
             transformed = self.rigid_transform(image=image, mask=mask)
-            image = transformed['image']
-            mask = transformed['mask']
-        
+            image = transformed["image"]
+            mask = transformed["mask"]
+
         if self.degradation_transform is not None:
             transformed = self.degradation_transform(image=image)
-            image = transformed['image']
-                
-        return {
-            'image': image,
-            'mask': mask
-        }
+            image = transformed["image"]
+
+        return {"image": image, "mask": mask}
 
     def _apply_downup_scale(self, image):
         # scale ratio 생성
         scale_ratio = random.uniform(0.4, 0.8)
         # interpolation 방식 선택
-        down_interpolation = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
-        up_interpolation = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
-        
+        down_interpolation = random.choice(
+            [cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA]
+        )
+        up_interpolation = random.choice(
+            [cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA]
+        )
+
         h, w = image.shape[:2]
         # downscale
         h_down, w_down = int(h * scale_ratio), int(w * scale_ratio)
         img_down = cv2.resize(image, (w_down, h_down), interpolation=down_interpolation)
         # 원본 크기로 upscale
         img_up = cv2.resize(img_down, (w, h), interpolation=up_interpolation)
-        
+
         return img_up
