@@ -48,6 +48,34 @@ def get_train_val_loader(
     return train_loader, val_loader
 
 
+def calculate_loss(
+    model: nn.Module,
+    images,
+    true_masks,
+    amp: bool,
+    device,
+    criterion,
+):
+    with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
+        prediction = model(images)
+        if model.n_classes == 1:
+            loss = criterion(prediction.squeeze(1), true_masks.float())
+            loss += dice_loss(
+                F.sigmoid(prediction.squeeze(1)),
+                true_masks.float(),
+                multiclass=False,
+            )
+        else:
+            loss = criterion(prediction, true_masks)
+            loss += dice_loss(
+                F.softmax(prediction, dim=1).float(),
+                F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
+                multiclass=True,
+            )
+
+    return loss
+
+
 def train_model(
     model,
     device,
@@ -60,7 +88,6 @@ def train_model(
     name: str = "",
     save_checkpoint: bool = True,
     weight_decay: float = 1e-2,
-    momentum: float = 0.999,
     gradient_clipping: float = 1.0,
 ):
     train_loader, val_loader = get_train_val_loader(
@@ -124,26 +151,14 @@ def train_model(
                 )
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
-                with torch.autocast(
-                    device.type if device.type != "mps" else "cpu", enabled=amp
-                ):
-                    prediction = model(images)
-                    if model.n_classes == 1:
-                        loss = criterion(prediction.squeeze(1), true_masks.float())
-                        loss += dice_loss(
-                            F.sigmoid(prediction.squeeze(1)),
-                            true_masks.float(),
-                            multiclass=False,
-                        )
-                    else:
-                        loss = criterion(prediction, true_masks)
-                        loss += dice_loss(
-                            F.softmax(prediction, dim=1).float(),
-                            F.one_hot(true_masks, model.n_classes)
-                            .permute(0, 3, 1, 2)
-                            .float(),
-                            multiclass=True,
-                        )
+                loss = calculate_loss(
+                    model=model,
+                    images=images,
+                    true_masks=true_masks,
+                    amp=amp,
+                    device=device,
+                    criterion=criterion,
+                )
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
