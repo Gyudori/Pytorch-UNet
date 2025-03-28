@@ -7,7 +7,8 @@ from predict import predict_img, mask_to_image
 
 
 def main():
-    input_filepath = Path("data_floorplan/test1/floorplan_resized.png")
+    test_name = "test"
+    input_filepath = Path(f"data_floorplan/{test_name}/floorplan_resized.png")
 
     img = Image.open(input_filepath)
 
@@ -18,16 +19,23 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net.to(device=device)
 
-    epochs = [i for i in range(100, 1001, 100)]
-    
-    model_names = [f"checkpoint_epoch{epoch}.pth" for epoch in epochs]
+    predict_multiple_epochs = True
+    if predict_multiple_epochs:
+        start = 50
+        end = 200
+        step = 50
+        epochs = range(start, end + 1, step)
+        model_names = [f"checkpoint_epoch{epoch}.pth" for epoch in epochs]
+    else:
+        model_names = ["checkpoint_epoch200.pth"]
 
     run_dir = Path("runs/Feb12_17-56-30_tiso_augmentation_LR_1e-08_BS_1_SCALE_1.0")
+    run_dir = Path("runs/Mar25_13-46-20_tiso_LR_1e-08_BS_1_SCALE_1.0")
     model_dir = run_dir / "checkpoints"
 
-    out_dir = run_dir / "test"
+    out_dir = run_dir / test_name
     out_dir.mkdir(exist_ok=True)
-    
+
     img.save(out_dir / "input.png")
 
     for model_name in model_names:
