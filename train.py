@@ -16,9 +16,36 @@ from unet import UNet
 from utils.data_loading import BasicDataset, FloorplanDataset
 from utils.dice_score import dice_loss
 
-dataset_dir = Path("./dataset_floorplan/2025_03_13")
-dir_img = dataset_dir / "imgs"
-dir_mask = dataset_dir / "masks"
+
+def get_train_val_loader(
+    val_percent: float,
+    batch_size: int,
+    img_scale: float,
+):
+    dataset_dir = Path("./dataset_floorplan/2025_03_13")
+    dir_img = dataset_dir / "imgs"
+    dir_mask = dataset_dir / "masks"
+
+    try:
+        dataset = FloorplanDataset(
+            dir_img, dir_mask, img_scale, enable_augmentation=True
+        )
+    except (AssertionError, RuntimeError, IndexError):
+        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+
+    n_val = int(len(dataset) * val_percent)
+    n_train = len(dataset) - n_val
+    train_set, val_set = random_split(
+        dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0)
+    )
+
+    loader_args = dict(
+        batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True
+    )
+    train_loader = DataLoader(train_set, shuffle=True, **loader_args)
+    val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
+
+    return train_loader, val_loader
 
 
 def train_model(
@@ -36,27 +63,13 @@ def train_model(
     momentum: float = 0.999,
     gradient_clipping: float = 1.0,
 ):
-    # 1. Create dataset
-    try:
-        dataset = FloorplanDataset(
-            dir_img, dir_mask, img_scale, enable_augmentation=True
-        )
-    except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
-
-    # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(
-        dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0)
+    train_loader, val_loader = get_train_val_loader(
+        val_percent=val_percent,
+        batch_size=batch_size,
+        img_scale=img_scale,
     )
-
-    # 3. Create data loaders
-    loader_args = dict(
-        batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True
-    )
-    train_loader = DataLoader(train_set, shuffle=True, **loader_args)
-    val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
+    n_train = len(train_loader.dataset)
+    n_val = len(val_loader.dataset)
 
     # (Initialize logging)
     if name != "":
@@ -76,7 +89,6 @@ def train_model(
         Mixed Precision: {amp}
     """)
 
-    # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
@@ -92,7 +104,6 @@ def train_model(
     validation_per_epoch = 5
     division_step = n_train // (validation_per_epoch * batch_size)
 
-    # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss = 0
@@ -176,7 +187,7 @@ def train_model(
             dir_checkpoint = Path(writer.log_dir) / "checkpoints"
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            state_dict["mask_values"] = dataset.mask_values
+            state_dict["mask_values"] = train_loader.dataset.mask_values
             torch.save(
                 state_dict, str(dir_checkpoint / "checkpoint_epoch{}.pth".format(epoch))
             )
