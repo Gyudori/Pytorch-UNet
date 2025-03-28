@@ -15,25 +15,25 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, FloorplanDataset
 from utils.dice_score import dice_loss
-from utils.utils import get_prediction_debug_image
 
-dir_img = Path("./data_floorplan/imgs/")
-dir_mask = Path("./data_floorplan/masks/")
+dataset_dir = Path("./dataset_floorplan/2025_03_13")
+dir_img = dataset_dir / "imgs"
+dir_mask = dataset_dir / "masks"
 
 def train_model(
         model,
         device,
-        epochs: int = 5,
-        batch_size: int = 1,
-        learning_rate: float = 1e-5,
-        val_percent: float = 0.1,
-        save_checkpoint: bool = True,
-        img_scale: float = 1.0,
+        epochs: int,
+        batch_size: int,
+        learning_rate: float,
+        val_percent: float,
+        img_scale: float,
         amp: bool = False,
-        weight_decay: float = 1e-8,
+        name: str = "",
+        save_checkpoint: bool = True,        
+        weight_decay: float = 1e-2,
         momentum: float = 0.999,
-        gradient_clipping: float = 1.0,
-        name: str = ""
+        gradient_clipping: float = 1.0       
 ):
     # 1. Create dataset
     try:
@@ -75,7 +75,9 @@ def train_model(
     global_step = 0
     
     validation_output_dir = Path(writer.log_dir) / 'validation'
-    validation_output_dir.mkdir(parents=True, exist_ok=True)
+    validation_output_dir.mkdir(parents=True, exist_ok=True)    
+    validation_per_epoch = 5
+    division_step = (n_train // (validation_per_epoch * batch_size))
 
     # 5. Begin training
     for epoch in range(1, epochs + 1):
@@ -120,26 +122,15 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (5 * batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
-                        val_score = evaluate(model, val_loader, device, amp)
+                        val_score = evaluate(model, val_loader, device, amp, validation_output_dir, global_step)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
-                        try:
-                            image = images[0].cpu()
-                            true_mask = true_masks[0].float().cpu().unsqueeze(0)
-                            pred_mask = prediction.argmax(dim=1)[0].float().cpu().unsqueeze(0)
-                            
-                            combined = get_prediction_debug_image(image, prediction, pred_mask, true_mask)
-                            
-                            save_image(combined, validation_output_dir / f"combined_{global_step}.png") 
-                                                                                    
+                        try:                                                                                    
                             writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
                             writer.add_scalar('validation/Dice', val_score, global_step)
-                            
-               
                         except Exception as e:
                             print(e)
                             pass
@@ -199,10 +190,10 @@ if __name__ == '__main__':
     try:
         train_model(
             model=model,
+            device=device,
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
-            device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
