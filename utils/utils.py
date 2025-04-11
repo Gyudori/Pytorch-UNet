@@ -54,3 +54,21 @@ def get_prediction_debug_image(
         )
 
     return combined
+
+
+def predict_and_get_debug_image(model, batch, device, amp):
+    images, true_mask = batch["image"], batch["mask"]
+
+    image = images.to(
+        device=device, dtype=torch.float32, memory_format=torch.channels_last
+    )
+
+    with torch.autocast(device.type if device.type != "mps" else "cpu", enabled=amp):
+        prediction = model(image)
+
+        image = image[0].cpu()
+        prediction = prediction.float().cpu()
+        pred_mask = prediction.argmax(dim=1)
+        true_mask = true_mask.float().cpu()
+
+        return get_prediction_debug_image(image, prediction, pred_mask, true_mask)
