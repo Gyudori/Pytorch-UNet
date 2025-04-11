@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,8 +14,9 @@ from tqdm import tqdm
 
 from evaluate import evaluate
 from unet import UNet
-from utils.data_loading import BasicDataset, FloorplanDataset
+from utils.data_loading import FloorplanDataset
 from utils.dice_score import dice_loss
+from utils.utils import predict_and_get_debug_image
 
 
 def get_train_val_loader(
@@ -26,12 +28,13 @@ def get_train_val_loader(
     dir_img = dataset_dir / "imgs"
     dir_mask = dataset_dir / "masks"
 
-    try:
-        dataset = FloorplanDataset(
-            dir_img, dir_mask, img_scale, enable_augmentation=True
-        )
-    except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    dataset = FloorplanDataset(
+        dir_img,
+        dir_mask,
+        img_scale,
+        enable_augmentation=True,
+        enable_degradation=False,
+    )
 
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -39,13 +42,21 @@ def get_train_val_loader(
         dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0)
     )
 
-    loader_args = dict(
-        batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True
-    )
+    num_workers = os.cpu_count()
+    # num_workers = 1
+
+    loader_args = dict(batch_size=batch_size, num_workers=num_workers, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
-    return train_loader, val_loader
+    test_img_dir = dataset_dir / "test" / "imgs"
+    test_mask_dir = dataset_dir / "test" / "masks"
+    test_set = FloorplanDataset(
+        test_img_dir, test_mask_dir, img_scale, enable_augmentation=False
+    )
+    test_loader = DataLoader(test_set, shuffle=False, drop_last=True, **loader_args)
+
+    return train_loader, val_loader, test_loader
 
 
 def calculate_loss(
@@ -76,6 +87,104 @@ def calculate_loss(
     return loss
 
 
+def update_weights(
+    optimizer: optim.Optimizer,
+    grad_scaler: torch.cuda.amp.GradScaler,
+    model: nn.Module,
+    loss: torch.Tensor,
+    gradient_clipping: float,
+):
+    optimizer.zero_grad(set_to_none=True)
+    grad_scaler.scale(loss).backward()
+    grad_scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
+    grad_scaler.step(optimizer)
+    grad_scaler.update()
+
+
+def validate(model, val_loader, device, amp, global_step, scheduler, writer, optimizer):
+    val_score = evaluate(
+        model,
+        val_loader,
+        device,
+        amp,
+    )
+    scheduler.step(val_score)
+
+    logging.info("Validation Dice score: {}".format(val_score))
+    try:
+        writer.add_scalar(
+            "learning_rate",
+            optimizer.param_groups[0]["lr"],
+            global_step,
+        )
+        writer.add_scalar("validation/Dice", val_score, global_step)
+    except Exception as e:
+        print(e)
+        pass
+
+
+def test(model, test_loader, device, amp, epoch, validation_step, test_output_dir):
+    for batch in test_loader:
+        debug_image = predict_and_get_debug_image(
+            model=model,
+            batch=batch,
+            device=device,
+            amp=amp,
+        )
+
+        name = batch["name"][0]
+
+        save_image(
+            debug_image,
+            test_output_dir
+            / f"{name}_epoch_{epoch:03d}_val_step_{validation_step}.png",
+        )
+
+
+def step(
+    model,
+    images,
+    true_masks,
+    device,
+    optimizer,
+    amp,
+    gradient_clipping,
+    criterion,
+    grad_scaler,
+):
+    assert images.shape[1] == model.n_channels, (
+        f"Network has been defined with {model.n_channels} input channels, "
+        f"but loaded images have {images.shape[1]} channels. Please check that "
+        "the images are loaded correctly."
+    )
+
+    images = images.to(
+        device=device,
+        dtype=torch.float32,
+        memory_format=torch.channels_last,
+    )
+    true_masks = true_masks.to(device=device, dtype=torch.long)
+
+    loss = calculate_loss(
+        model=model,
+        images=images,
+        true_masks=true_masks,
+        amp=amp,
+        device=device,
+        criterion=criterion,
+    )
+
+    update_weights(
+        optimizer=optimizer,
+        grad_scaler=grad_scaler,
+        model=model,
+        loss=loss,
+        gradient_clipping=gradient_clipping,
+    )
+    return loss
+
+
 def train_model(
     model,
     device,
@@ -90,26 +199,31 @@ def train_model(
     weight_decay: float = 1e-2,
     gradient_clipping: float = 1.0,
 ):
-    train_loader, val_loader = get_train_val_loader(
+    train_loader, val_loader, test_loader = get_train_val_loader(
         val_percent=val_percent,
         batch_size=batch_size,
         img_scale=img_scale,
     )
     n_train = len(train_loader.dataset)
     n_val = len(val_loader.dataset)
+    n_test = len(test_loader.dataset)
 
     # (Initialize logging)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_name = f"{timestamp}"
     if name != "":
-        name = f"_{name}"
-    writer = SummaryWriter(
-        comment=f"{name}_LR_{learning_rate}_BS_{batch_size}_SCALE_{img_scale}"
-    )
+        log_name += f"_{name}"
+    log_name += f"_BS_{batch_size}_LR_{learning_rate}_SCALE_{img_scale}"
+
+    log_dir = Path("runs2") / log_name
+    writer = SummaryWriter(log_dir=log_dir)
     logging.info(f"""Starting training:
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {learning_rate}
         Training size:   {n_train}
         Validation size: {n_val}
+        Testing size:    {n_test}
         Checkpoints:     {save_checkpoint}
         Device:          {device.type}
         Images scaling:  {img_scale}
@@ -129,7 +243,10 @@ def train_model(
     validation_output_dir = Path(writer.log_dir) / "validation"
     validation_output_dir.mkdir(parents=True, exist_ok=True)
     validation_per_epoch = 5
-    division_step = n_train // (validation_per_epoch * batch_size)
+    validation_interval = n_train // (validation_per_epoch * batch_size)
+
+    test_output_dir = Path(writer.log_dir) / "test"
+    test_output_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -138,34 +255,17 @@ def train_model(
             for batch in train_loader:
                 images, true_masks = batch["image"], batch["mask"]
 
-                assert images.shape[1] == model.n_channels, (
-                    f"Network has been defined with {model.n_channels} input channels, "
-                    f"but loaded images have {images.shape[1]} channels. Please check that "
-                    "the images are loaded correctly."
-                )
-
-                images = images.to(
-                    device=device,
-                    dtype=torch.float32,
-                    memory_format=torch.channels_last,
-                )
-                true_masks = true_masks.to(device=device, dtype=torch.long)
-
-                loss = calculate_loss(
+                loss = step(
                     model=model,
                     images=images,
                     true_masks=true_masks,
-                    amp=amp,
                     device=device,
+                    optimizer=optimizer,
+                    amp=amp,
+                    gradient_clipping=gradient_clipping,
                     criterion=criterion,
+                    grad_scaler=grad_scaler,
                 )
-
-                optimizer.zero_grad(set_to_none=True)
-                grad_scaler.scale(loss).backward()
-                grad_scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
-                grad_scaler.step(optimizer)
-                grad_scaler.update()
 
                 pbar.update(images.shape[0])
                 global_step += 1
@@ -174,37 +274,38 @@ def train_model(
                 pbar.set_postfix(**{"loss (batch)": loss.item()})
 
                 # Evaluation round
-                if division_step > 0:
-                    if global_step % division_step == 0:
-                        val_score = evaluate(
-                            model,
-                            val_loader,
-                            device,
-                            amp,
-                            validation_output_dir,
-                            global_step,
-                        )
-                        scheduler.step(val_score)
+                if validation_interval > 0 and global_step % validation_interval == 0:
+                    validate(
+                        model=model,
+                        val_loader=val_loader,
+                        device=device,
+                        amp=amp,
+                        global_step=global_step,
+                        scheduler=scheduler,
+                        writer=writer,
+                        optimizer=optimizer,
+                    )
 
-                        logging.info("Validation Dice score: {}".format(val_score))
-                        try:
-                            writer.add_scalar(
-                                "learning_rate",
-                                optimizer.param_groups[0]["lr"],
-                                global_step,
-                            )
-                            writer.add_scalar("validation/Dice", val_score, global_step)
-                        except Exception as e:
-                            print(e)
-                            pass
+                    validation_step = global_step // validation_interval
+
+                    test(
+                        model,
+                        test_loader,
+                        device,
+                        amp,
+                        epoch,
+                        validation_step,
+                        test_output_dir,
+                    )
 
         if save_checkpoint:
             dir_checkpoint = Path(writer.log_dir) / "checkpoints"
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            state_dict["mask_values"] = train_loader.dataset.mask_values
+            state_dict["mask_values"] = train_loader.dataset.dataset.mask_values
             torch.save(
-                state_dict, str(dir_checkpoint / "checkpoint_epoch{}.pth".format(epoch))
+                state_dict,
+                str(dir_checkpoint / "checkpoint_epoch{}.pth".format(epoch)),
             )
             logging.info(f"Checkpoint {epoch} saved!")
 
