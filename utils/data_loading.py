@@ -10,6 +10,8 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from albumentations.augmentations.transforms import ImageCompression
 import random
 import cv2
 
@@ -140,6 +142,7 @@ class BasicDataset(Dataset):
         return {
             "image": torch.as_tensor(img.copy()).float().contiguous(),
             "mask": torch.as_tensor(mask.copy()).long().contiguous(),
+            "name": name,
         }
 
 
@@ -149,12 +152,17 @@ class CarvanaDataset(BasicDataset):
 
 
 class FloorplanDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1, enable_augmentation=False):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix="_mask")
+    def __init__(
+        self,
+        images_dir,
+        mask_dir,
+        scale=1,
+        enable_augmentation=False,
+        enable_degradation=False,
+    ):
+        super().__init__(images_dir, mask_dir, scale)
         self.rigid_transform = None
         self.degradation_transform = None
-
-        enable_degradation = True
 
         if enable_augmentation:
             self.rigid_transform = A.Compose(
@@ -163,7 +171,7 @@ class FloorplanDataset(BasicDataset):
                     A.VerticalFlip(p=0.5),
                     A.RandomRotate90(p=0.5),
                     A.Transpose(p=0.5),
-                    A.ToTensorV2(),
+                    ToTensorV2(),
                 ]
             )
 
@@ -172,39 +180,53 @@ class FloorplanDataset(BasicDataset):
                     [
                         A.OneOf(
                             [
-                                A.JpegCompression(
-                                    quality_lower=85, quality_upper=95, p=0.5
+                                ImageCompression(
+                                    quality_lower=85,
+                                    quality_upper=95,
+                                    p=0.5,
+                                    compression_type=ImageCompression.ImageCompressionType.JPEG,
                                 ),
                                 A.Lambda(
-                                    image=lambda x, _: self._apply_downup_scale(x),
+                                    image=lambda x, **kwargs: self._apply_downup_scale(
+                                        x
+                                    ),
                                     p=0.5,
                                 ),
                             ],
                             p=0.3,
                         ),
-                        A.ToTensorV2(),
+                        ToTensorV2(),
                     ],
                     additional_targets={},
                 )
         else:
-            self.rigid_transform = A.Compose([A.ToTensorV2()])
+            self.rigid_transform = A.Compose([ToTensorV2()])
 
     def __getitem__(self, idx):
         basic_data = super().__getitem__(idx)
 
-        image = basic_data["image"].numpy().transpose(1, 2, 0)
-        mask = basic_data["mask"].numpy()
+        image = basic_data["image"]
+        mask = basic_data["mask"]
 
         if self.rigid_transform is not None:
+            image = image.permute(1, 2, 0).numpy()
+            mask = mask.unsqueeze(-1).numpy()
             transformed = self.rigid_transform(image=image, mask=mask)
             image = transformed["image"]
-            mask = transformed["mask"]
+            mask = transformed["mask"].squeeze()
 
         if self.degradation_transform is not None:
+            image = image.permute(1, 2, 0).numpy()
             transformed = self.degradation_transform(image=image)
             image = transformed["image"]
 
-        return {"image": image, "mask": mask}
+        data = {
+            "image": image,
+            "mask": mask,
+            "name": basic_data["name"],
+        }
+
+        return data
 
     def _apply_downup_scale(self, image):
         # scale ratio 생성
