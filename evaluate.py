@@ -1,15 +1,12 @@
 import torch
 import torch.nn.functional as F
-from torchvision.utils import save_image
 from tqdm import tqdm
-from pathlib import Path
 
 from utils.dice_score import multiclass_dice_coeff, dice_coeff
-from utils.utils import get_prediction_debug_image
 
 
 @torch.inference_mode()
-def evaluate(net, dataloader, device, amp, output_dir: Path, step: int):
+def evaluate(net, dataloader, device, amp):
     net.eval()
     num_val_batches = len(dataloader)
     dice_score = 0
@@ -61,17 +58,6 @@ def evaluate(net, dataloader, device, amp, output_dir: Path, step: int):
                 dice_score += multiclass_dice_coeff(
                     prediction2[:, 1:], mask_true2[:, 1:], reduce_batch_first=False
                 )
-
-            if output_dir is not None:
-                image = image[0].cpu()
-                prediction = prediction.float().cpu()
-                mask_pred = prediction.argmax(dim=1)[0].float().cpu().unsqueeze(0)
-                mask_true = mask_true.cpu()
-                # save the debug image
-                debug_image = get_prediction_debug_image(
-                    image, prediction, mask_pred, mask_true
-                )
-                save_image(debug_image, output_dir / f"image_{idx:03d}_step_{step}.png")
 
             idx += 1
 
