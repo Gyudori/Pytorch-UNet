@@ -8,9 +8,10 @@ import torch.nn.functional as F
 from torchvision.utils import save_image
 from pathlib import Path
 from torch import optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import random
 
 from evaluate import evaluate
 from unet import UNet
@@ -28,19 +29,21 @@ def get_train_val_loader(
     dir_img = dataset_dir / "imgs"
     dir_mask = dataset_dir / "masks"
 
-    dataset = FloorplanDataset(
-        dir_img,
-        dir_mask,
-        img_scale,
-        enable_augmentation=True,
-        enable_degradation=False,
+    full_dataset = FloorplanDataset(dir_img, dir_mask, img_scale)
+    train_dataset = FloorplanDataset(
+        dir_img, dir_mask, img_scale, enable_augmentation=False
     )
 
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(
-        dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0)
-    )
+    indices = list(range(len(full_dataset)))
+    random.seed(0)
+    random.shuffle(indices)
+
+    n_val = int(len(full_dataset) * val_percent)
+    val_indices = indices[:n_val]
+    train_indices = indices[n_val:]
+
+    train_set = torch.utils.data.Subset(train_dataset, train_indices)
+    val_set = torch.utils.data.Subset(full_dataset, val_indices)
 
     num_workers = os.cpu_count()
     # num_workers = 1
@@ -51,9 +54,7 @@ def get_train_val_loader(
 
     test_img_dir = dataset_dir / "test" / "imgs"
     test_mask_dir = dataset_dir / "test" / "masks"
-    test_set = FloorplanDataset(
-        test_img_dir, test_mask_dir, img_scale, enable_augmentation=False
-    )
+    test_set = FloorplanDataset(test_img_dir, test_mask_dir, img_scale)
     test_loader = DataLoader(test_set, shuffle=False, drop_last=True, **loader_args)
 
     return train_loader, val_loader, test_loader
@@ -219,7 +220,7 @@ def train_model(
         log_name += f"_{name}"
     log_name += f"_BS_{batch_size}_LR_{learning_rate}_SCALE_{img_scale}"
 
-    log_dir = Path("runs2") / log_name
+    log_dir = Path("runs") / log_name
     writer = SummaryWriter(log_dir=log_dir)
     logging.info(f"""Starting training:
         Epochs:          {epochs}
