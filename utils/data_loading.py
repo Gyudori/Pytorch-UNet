@@ -118,6 +118,13 @@ class BasicDataset(Dataset):
 
             return img
 
+    @staticmethod
+    def get_preprocessed_image(filepath, mask_values):
+        img = load_image(filepath)
+        img = BasicDataset.preprocess(mask_values, img, scale=1.0, is_mask=False)
+
+        return torch.as_tensor(img.copy()).float().contiguous()
+
     def __getitem__(self, idx):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + ".*"))
