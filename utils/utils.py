@@ -56,10 +56,8 @@ def get_prediction_debug_image(
     return combined
 
 
-def predict_and_get_debug_image(model, batch, device, amp):
-    images, true_mask = batch["image"], batch["mask"]
-
-    image = images.to(
+def predict_and_get_debug_image(model, image, true_mask, device, amp):
+    image = image.to(
         device=device, dtype=torch.float32, memory_format=torch.channels_last
     )
 

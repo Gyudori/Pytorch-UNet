@@ -125,10 +125,12 @@ def validate(model, val_loader, device, amp, global_step, scheduler, writer, opt
 
 
 def test(model, test_loader, device, amp, epoch, validation_step, test_output_dir):
+    model.eval()
     for batch in test_loader:
         debug_image = predict_and_get_debug_image(
             model=model,
-            batch=batch,
+            image=batch["image"],
+            true_mask=batch["mask"],
             device=device,
             amp=amp,
         )
@@ -140,6 +142,8 @@ def test(model, test_loader, device, amp, epoch, validation_step, test_output_di
             test_output_dir
             / f"{name}_epoch_{epoch:03d}_val_step_{validation_step}.png",
         )
+
+    model.train()
 
 
 def step(
