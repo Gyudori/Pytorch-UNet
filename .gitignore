@@ -1,6 +1,6 @@
 *.pyc
 data*
-runs/
+runs*
 .vscode/
 __pycache__/
 checkpoints/
